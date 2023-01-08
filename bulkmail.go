@@ -71,7 +71,7 @@ func addBulkMail(c echo.Context) error {
 			}
 
 			if message, _ := json.Marshal(set); message != nil {
-				if err = singleQueue.Publish(string(message)); err != nil {
+				if err = bulkQueue.Publish(string(message)); err != nil {
 					return err
 				}
 			}
