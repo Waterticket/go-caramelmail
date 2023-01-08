@@ -3,13 +3,12 @@ package caramelmail
 import (
 	"crypto/tls"
 	"encoding/json"
-	"errors"
+	"github.com/adjust/rmq/v5"
 	"github.com/labstack/echo/v4"
 	"github.com/toorop/go-dkim"
 	"github.com/xhit/go-simple-mail/v2"
 	"log"
 	"net"
-	"strings"
 	"time"
 )
 
@@ -82,7 +81,7 @@ func addBulkMail(c echo.Context) error {
 	return nil
 }
 
-func (b *BulkMail) Send() {
+func (b *BulkMail) Send() error {
 	mxs, err := net.LookupMX(b.ToHost)
 	if err != nil {
 		log.Fatal(err)
@@ -107,7 +106,10 @@ func (b *BulkMail) Send() {
 		// SMTP client
 		smtpClient, err := server.Connect()
 		if err != nil {
-			log.Fatal(err)
+			return &MailError{
+				StatusCode: 401,
+				Err:        err,
+			}
 		}
 
 		var options dkim.SigOptions
@@ -140,18 +142,54 @@ func (b *BulkMail) Send() {
 
 			err = email.Send(smtpClient)
 			if err != nil {
-				log.Println(err)
+				return &MailError{
+					StatusCode: 402,
+					Err:        err,
+				}
 			} else {
 				log.Println("Email Sent")
 			}
 		}
 	}
+
+	return nil
 }
 
-func splitAddress(addr string) (local, domain string, err error) {
-	parts := strings.SplitN(addr, "@", 2)
-	if len(parts) != 2 {
-		return "", "", errors.New("mta: invalid mail address")
+type BulkConsumer struct {
+}
+
+func (consumer *BulkConsumer) Consume(delivery rmq.Delivery) {
+	m := new(BulkMail)
+	if err := json.Unmarshal([]byte(delivery.Payload()), m); err != nil {
+		_ = delivery.Reject()
+		log.Println(err)
+		return
 	}
-	return parts[0], parts[1], nil
+
+	_, domain, _ := splitAddress(m.From)
+	_, err := CircuitBreaker(domain).Execute(func() (interface{}, error) {
+		err := m.Send()
+
+		if err != nil {
+			re, ok := err.(*MailError)
+			if ok {
+				if re.StatusCode == 401 { // connection failed
+					_ = singleQueue.Publish(string(delivery.Payload()))
+				}
+			}
+
+			_ = delivery.Reject()
+			return nil, err
+		}
+
+		delivery.Ack()
+		return nil, nil
+	})
+
+	// circuit breaker open
+	if err != nil {
+		log.Println(err)
+		_ = singleQueue.Publish(string(delivery.Payload()))
+		_ = delivery.Reject()
+	}
 }

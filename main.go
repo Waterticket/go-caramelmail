@@ -1,11 +1,14 @@
 package caramelmail
 
 import (
+	"errors"
 	"github.com/adjust/rmq/v5"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/labstack/gommon/log"
+	"github.com/sony/gobreaker"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -16,6 +19,8 @@ var (
 
 	singleQueue rmq.Queue
 	bulkQueue   rmq.Queue
+
+	circuitBreakerList map[string]*gobreaker.CircuitBreaker
 )
 
 func Run() {
@@ -51,4 +56,12 @@ func Run() {
 
 func index(c echo.Context) error {
 	return c.String(http.StatusOK, "Hello, World!")
+}
+
+func splitAddress(addr string) (local, domain string, err error) {
+	parts := strings.SplitN(addr, "@", 2)
+	if len(parts) != 2 {
+		return "", "", errors.New("mta: invalid mail address")
+	}
+	return parts[0], parts[1], nil
 }

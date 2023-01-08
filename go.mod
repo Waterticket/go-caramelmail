@@ -6,6 +6,7 @@ require (
 	github.com/adjust/rmq/v5 v5.0.1
 	github.com/labstack/echo/v4 v4.10.0
 	github.com/labstack/gommon v0.4.0
+	github.com/sony/gobreaker v0.5.0
 	github.com/toorop/go-dkim v0.0.0-20201103131630-e1cd1a0a5208
 	github.com/xhit/go-simple-mail/v2 v2.13.0
 )

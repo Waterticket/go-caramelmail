@@ -3,6 +3,7 @@ package caramelmail
 import (
 	"crypto/tls"
 	"encoding/json"
+	"github.com/adjust/rmq/v5"
 	"github.com/labstack/echo/v4"
 	"github.com/toorop/go-dkim"
 	mail "github.com/xhit/go-simple-mail/v2"
@@ -44,7 +45,7 @@ func addSingleMail(c echo.Context) error {
 	return nil
 }
 
-func (m *Mail) Send() {
+func (m *Mail) Send() error {
 	_, toDomain, err := splitAddress(m.To)
 	if err != nil {
 		log.Fatal(err)
@@ -79,7 +80,10 @@ func (m *Mail) Send() {
 		// SMTP client
 		smtpClient, err := server.Connect()
 		if err != nil {
-			log.Fatal(err)
+			return &MailError{
+				StatusCode: 401,
+				Err:        err,
+			}
 		}
 
 		email := mail.NewMSG()
@@ -107,9 +111,53 @@ func (m *Mail) Send() {
 
 		err = email.Send(smtpClient)
 		if err != nil {
-			log.Println(err)
+			return &MailError{
+				StatusCode: 402,
+				Err:        err,
+			}
 		} else {
 			log.Println("Email Sent")
 		}
+	}
+
+	return nil
+}
+
+type SingleConsumer struct {
+}
+
+func (consumer *SingleConsumer) Consume(delivery rmq.Delivery) {
+	m := new(Mail)
+	if err := json.Unmarshal([]byte(delivery.Payload()), m); err != nil {
+		_ = delivery.Reject()
+		log.Println(err)
+		return
+	}
+
+	_, domain, _ := splitAddress(m.From)
+	_, err := CircuitBreaker(domain).Execute(func() (interface{}, error) {
+		err := m.Send()
+
+		if err != nil {
+			re, ok := err.(*MailError)
+			if ok {
+				if re.StatusCode == 401 { // connection failed
+					_ = singleQueue.Publish(string(delivery.Payload()))
+				}
+			}
+
+			_ = delivery.Reject()
+			return nil, err
+		}
+
+		delivery.Ack()
+		return nil, nil
+	})
+
+	// circuit breaker open
+	if err != nil {
+		log.Println(err)
+		_ = singleQueue.Publish(string(delivery.Payload()))
+		_ = delivery.Reject()
 	}
 }
