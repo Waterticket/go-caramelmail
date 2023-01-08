@@ -2,6 +2,8 @@ package caramelmail
 
 import (
 	"crypto/tls"
+	"encoding/json"
+	"github.com/labstack/echo/v4"
 	"github.com/toorop/go-dkim"
 	mail "github.com/xhit/go-simple-mail/v2"
 	"log"
@@ -10,13 +12,36 @@ import (
 )
 
 type Mail struct {
-	From       string
-	FromName   string
-	To         string
-	ToName     string
-	Subject    string
-	Body       string
-	PrivateKey string
+	From       string `json:"from"`
+	FromName   string `json:"senderName"`
+	To         string `json:"to"`
+	Subject    string `json:"subject"`
+	Body       string `json:"body"`
+	PrivateKey string `json:"privateKey"`
+}
+
+func addSingleMail(c echo.Context) error {
+	post := new(Mail)
+	if err := c.Bind(post); err != nil {
+		return err
+	}
+
+	name, _, err := splitAddress(post.From)
+	if err != nil {
+		return err
+	}
+
+	if post.FromName == "" {
+		post.FromName = name
+	}
+
+	if message, _ := json.Marshal(post); message != nil {
+		if err = singleQueue.Publish(string(message)); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (m *Mail) Send() {

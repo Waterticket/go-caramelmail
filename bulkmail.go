@@ -2,7 +2,9 @@ package caramelmail
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"errors"
+	"github.com/labstack/echo/v4"
 	"github.com/toorop/go-dkim"
 	"github.com/xhit/go-simple-mail/v2"
 	"log"
@@ -12,29 +14,72 @@ import (
 )
 
 type BulkMail struct {
-	From       string
+	From       string `json:"from"`
 	fromHost   string
-	FromName   string
-	PrivateKey string
+	FromName   string `json:"fromName"`
+	PrivateKey string `json:"privateKey"`
 	ToHost     string
-	Mail       []Mail
+	Mail       []Mail `json:"mail"`
 }
 
-func NewBulkMail(from, fromName, privateKey, toHost string, mail []Mail) (*BulkMail, error) {
-	_, domain, err := splitAddress(from)
-	if err != nil {
-		log.Fatal(err)
-		return nil, err
+func addBulkMail(c echo.Context) error {
+	post := new(BulkMail)
+	if err := c.Bind(post); err != nil {
+		return err
 	}
 
-	return &BulkMail{
-		From:       from,
-		fromHost:   domain,
-		FromName:   fromName,
-		PrivateKey: privateKey,
-		ToHost:     toHost,
-		Mail:       mail,
-	}, nil
+	name, domain, err := splitAddress(post.From)
+	if err != nil {
+		return err
+	}
+
+	if post.FromName == "" {
+		post.FromName = name
+	}
+
+	post.fromHost = domain
+
+	var mail map[string][]Mail
+	for _, m := range post.Mail {
+		_, domain, err = splitAddress(m.To)
+		if err != nil {
+			return err
+		}
+
+		if _, ok := mail[domain]; !ok {
+			mail[domain] = []Mail{}
+		}
+
+		mail[domain] = append(mail[domain], m)
+	}
+
+	// slice mails every 100 mails
+	for _, mails := range mail {
+		mailsLen := len(mails)
+		for i := 0; i < mailsLen; i += 100 {
+			end := i + 100
+			if end > mailsLen {
+				end = mailsLen
+			}
+
+			set := &BulkMail{
+				From:       post.From,
+				fromHost:   post.fromHost,
+				FromName:   post.FromName,
+				PrivateKey: post.PrivateKey,
+				ToHost:     post.ToHost,
+				Mail:       mails[i:end],
+			}
+
+			if message, _ := json.Marshal(set); message != nil {
+				if err = singleQueue.Publish(string(message)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 func (b *BulkMail) Send() {
